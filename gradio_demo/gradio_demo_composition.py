@@ -200,7 +200,11 @@ class Demo_UI:
         self.reset()
 
         tokenizer = AutoTokenizer.from_pretrained(self.ckpt_path, trust_remote_code=True)
-        self.model = AutoModelForCausalLM.from_pretrained(self.ckpt_path, device_map='cuda', trust_remote_code=True, torch_dtype=torch.bfloat16).eval()
+
+        device_map = 'cuda'
+        if num_gpus > 1:
+            device_map = 'auto'
+        self.model = AutoModelForCausalLM.from_pretrained(self.ckpt_path, device_map=device_map, trust_remote_code=True, torch_dtype=torch.bfloat16).eval()
         self.model.tokenizer = tokenizer
 
         self.vis_processor = ImageProcessor(self.model.vis_processor)
@@ -302,7 +306,10 @@ class Demo_UI:
         images = torch.stack(images, dim=0)
         with torch.no_grad():
             with torch.cuda.amp.autocast():
-                img_embeds = self.model.encode_img(images)
+                img_embeds = []
+                for k in range(len(images)):
+                    img_emb = self.model.encode_img(images[k])
+                    img_embeds.append(img_emb)
         return img_embeds
 
     def generate_loc(self, text_sections, upimages, image_num):
@@ -355,7 +362,7 @@ class Demo_UI:
         return caps
 
     def interleav_wrap(self, text, image, max_length=16384):
-        device = 'cuda'
+        device = self.model.device  # 使用模型所在的设备
         image_nums = len(image)
         parts = text.split('<image>')
         wrap_embeds, wrap_im_mask = [], []
@@ -371,12 +378,12 @@ class Demo_UI:
                 if need_bos:
                     need_bos = False
                 part_embeds = self.model.model.tok_embeddings(part_tokens.input_ids)
-                wrap_embeds.append(part_embeds)
-                wrap_im_mask.append(torch.zeros(part_embeds.shape[:2]))
+                wrap_embeds.append(part_embeds.to(device))
+                wrap_im_mask.append(torch.zeros(part_embeds.shape[:2]).to(device))
                 temp_len += part_embeds.shape[1]
             if idx < image_nums:
-                wrap_embeds.append(image[idx])
-                wrap_im_mask.append(torch.ones(1, image[idx].shape[1]))
+                wrap_embeds.append(image[idx].to(device))
+                wrap_im_mask.append(torch.ones(1, image[idx].shape[1]).to(device))
                 temp_len += image[idx].shape[1]
 
             if temp_len > max_length:
@@ -464,14 +471,17 @@ class Demo_UI:
         images = torch.stack(images, dim=0).cuda()
         with torch.no_grad():
             with torch.cuda.amp.autocast():
-                img_embeds = self.model.encode_img(images)
+                img_embeds = []
+                for k in range(len(images)):
+                    img_emb = self.model.encode_img(images[k])
+                    img_embeds.append(img_emb)
 
         for i, text in enumerate(output_text):
             pre_text += text + '\n'
             if i in locs:
                 pre_text_list.append(pre_text)
                 pre_text = ''
-                print(img_embeds.shape)
+                print(f"img_embeds size: {len(img_embeds)}")
                 cand_embeds = torch.stack([item for j, item in enumerate(img_embeds) if j not in selected], dim=0)
                 ans2idx = {}
                 count = 0
@@ -489,18 +499,19 @@ class Demo_UI:
                     input_embeds, im_mask, len_input_tokens = self.interleav_wrap(input_text, all_img)
 
                     with torch.no_grad():
-                        outputs = self.model.generate(
-                                                inputs_embeds=input_embeds,
-                                                do_sample=True,
-                                                temperature=1.,
-                                                max_new_tokens=10,
-                                                repetition_penalty=1.005,
-                                                top_p=0.8,
-                                                top_k=40,
-                                                length_penalty=1.0,
-                                                im_mask=im_mask,
-                                                infer_mode='write',
-                                                )
+                        with torch.cuda.amp.autocast():
+                            outputs = self.model.generate(
+                                                    inputs_embeds=input_embeds,
+                                                    do_sample=True,
+                                                    temperature=1.,
+                                                    max_new_tokens=10,
+                                                    repetition_penalty=1.005,
+                                                    top_p=0.8,
+                                                    top_k=40,
+                                                    length_penalty=1.0,
+                                                    im_mask=im_mask,
+                                                    infer_mode='write',
+                                                    )
                     response = outputs[0][2:].tolist()   #<s>: C
                     #print(response)
                     out_text = self.model.tokenizer.decode(response, add_special_tokens=True)
@@ -565,7 +576,10 @@ class Demo_UI:
                 images = torch.stack(images, dim=0)
                 with torch.no_grad():
                     with torch.cuda.amp.autocast():
-                        img_embeds = self.model.encode_img(images)
+                        img_embeds = []
+                        for k in range(len(images)):
+                            img_emb = self.model.encode_img(images[k])
+                            img_embeds.append(img_emb)
 
                 text = self.text2instruction(instruction)
 
@@ -830,7 +844,8 @@ class Demo_UI:
                           transformers.StoppingCriteriaList())
         kwargs["stopping_criteria"].append(Stream(callback_func=callback))
         with torch.no_grad():
-            self.model.generate(**kwargs)
+            with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+                self.model.generate(**kwargs)
 
     def generate_with_streaming(self, **kwargs):
         return Iteratorize(self.generate_with_callback, kwargs, callback=None)
