@@ -152,7 +152,7 @@ class Demo_UI:
         self.reset()
 
         tokenizer = AutoTokenizer.from_pretrained(code_path, trust_remote_code=True)
-        self.model = AutoModelForCausalLM.from_pretrained(code_path, device_map='cuda', trust_remote_code=True).half().eval()
+        self.model = AutoModelForCausalLM.from_pretrained(code_path, device_map='cuda', trust_remote_code=True, torch_dtype=torch.bfloat16).eval()
         self.model.tokenizer = tokenizer
         self.model.vit.resize_pos()
 
@@ -362,17 +362,18 @@ class Demo_UI:
                         input_embeds, im_mask, len_input_tokens = self.interleav_wrap(input_text, img_embeds)
 
                 with torch.no_grad():
-                    outputs = self.model.generate(
-                                            inputs_embeds=input_embeds,
-                                            do_sample=True,
-                                            temperature=1.,
-                                            max_new_tokens=10,
-                                            repetition_penalty=1.005,
-                                            top_p=0.8,
-                                            top_k=40,
-                                            length_penalty=1.0,
-                                            im_mask=im_mask
-                                            )
+                    with torch.cuda.amp.autocast():
+                        outputs = self.model.generate(
+                                                inputs_embeds=input_embeds,
+                                                do_sample=True,
+                                                temperature=1.,
+                                                max_new_tokens=10,
+                                                repetition_penalty=1.005,
+                                                top_p=0.8,
+                                                top_k=40,
+                                                length_penalty=1.0,
+                                                im_mask=im_mask
+                                                )
                 response = outputs[0][2:].tolist()   #<s>: C
                 #print(response)
                 out_text = self.model.tokenizer.decode(response, add_special_tokens=True)
@@ -427,17 +428,18 @@ class Demo_UI:
                     input_embeds, im_mask, len_input_tokens = self.interleav_wrap(input_text, all_img)
 
                     with torch.no_grad():
-                        outputs = self.model.generate(
-                                                inputs_embeds=input_embeds,
-                                                do_sample=True,
-                                                temperature=1.,
-                                                max_new_tokens=10,
-                                                repetition_penalty=1.005,
-                                                top_p=0.8,
-                                                top_k=40,
-                                                length_penalty=1.0,
-                                                im_mask=im_mask
-                                                )
+                        with torch.cuda.amp.autocast():
+                            outputs = self.model.generate(
+                                                    inputs_embeds=input_embeds,
+                                                    do_sample=True,
+                                                    temperature=1.,
+                                                    max_new_tokens=10,
+                                                    repetition_penalty=1.005,
+                                                    top_p=0.8,
+                                                    top_k=40,
+                                                    length_penalty=1.0,
+                                                    im_mask=im_mask
+                                                    )
                     response = outputs[0][2:].tolist()   #<s>: C
                     #print(response)
                     out_text = self.model.tokenizer.decode(response, add_special_tokens=True)
@@ -765,7 +767,8 @@ class Demo_UI:
                           transformers.StoppingCriteriaList())
         kwargs["stopping_criteria"].append(Stream(callback_func=callback))
         with torch.no_grad():
-            self.model.generate(**kwargs)
+            with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+                self.model.generate(**kwargs)
 
     def generate_with_streaming(self, **kwargs):
         return Iteratorize(self.generate_with_callback, kwargs, callback=None)
