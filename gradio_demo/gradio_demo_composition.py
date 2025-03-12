@@ -1062,5 +1062,5 @@ if __name__ == "__main__":
     if args.private:
         demo.queue().launch(share=False, server_name="127.0.0.1", server_port=args.port, max_threads=1)
     else:
-        demo.queue().launch(share=True, server_name="0.0.0.0", server_port=args.port, max_threads=1)
+        demo.queue().launch(share=False, server_name="0.0.0.0", server_port=args.port, max_threads=1)
 
